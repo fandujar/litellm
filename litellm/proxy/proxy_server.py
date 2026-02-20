@@ -309,6 +309,10 @@ from litellm.proxy.container_endpoints.endpoints import router as container_rout
 from litellm.proxy.credential_endpoints.endpoints import router as credential_router
 from litellm.proxy.db.db_transaction_queue.spend_log_cleanup import SpendLogCleanup
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
+from litellm.proxy.db.prisma_engine_health_monitor import (
+    start_prisma_health_monitor,
+    stop_prisma_health_monitor,
+)
 from litellm.proxy.discovery_endpoints import ui_discovery_endpoints_router
 from litellm.proxy.fine_tuning_endpoints.endpoints import router as fine_tuning_router
 from litellm.proxy.fine_tuning_endpoints.endpoints import set_fine_tuning_config
@@ -865,6 +869,15 @@ async def proxy_startup_event(app: FastAPI):  # noqa: PLR0915
 
         await ProxyStartupEvent._update_default_team_member_budget()
 
+        # Start Prisma engine health monitor to detect zombie processes
+        prisma_health_check_interval = general_settings.get(
+            "prisma_health_check_interval_seconds", 15
+        )
+        await start_prisma_health_monitor(
+            check_interval_seconds=prisma_health_check_interval,
+            prisma_client=prisma_client,
+        )
+
     # Start background health checks AFTER models are loaded and index is built
     if use_background_health_checks:
         asyncio.create_task(
@@ -901,6 +914,12 @@ async def proxy_startup_event(app: FastAPI):  # noqa: PLR0915
             await prisma_client.db.stop_token_refresh_task()
         except Exception as e:
             verbose_proxy_logger.error(f"Error stopping token refresh task: {e}")
+
+    # Shutdown event - stop Prisma engine health monitor
+    try:
+        await stop_prisma_health_monitor()
+    except Exception as e:
+        verbose_proxy_logger.error(f"Error stopping Prisma health monitor: {e}")
 
     await proxy_shutdown_event()  # type: ignore[reportGeneralTypeIssues]
 
